@@ -1,0 +1,288 @@
+// =============================================
+// Microsoft Defender Advanced Hunting Cheat Sheet
+// 40+ Ready-to-Run Queries (v2.0)
+// =============================================
+
+// 1. Suspicious PowerShell Encoded Commands
+DeviceProcessEvents
+| where FileName =~ "powershell.exe"
+| where ProcessCommandLine has_any(" -e ", " -enc ", " -EncodedCommand")
+| project Timestamp, DeviceName, AccountName, ProcessCommandLine
+// Detects obfuscated PowerShell commands
+
+// 2. Executables in Temp Folders
+DeviceFileEvents
+| where FolderPath contains "\\temp\\" or FolderPath contains "\\tmp\\"
+| where FileName endswith ".exe"
+| project Timestamp, DeviceName, InitiatingProcessFileName, FileName
+// Finds malware dropped in temporary locations
+
+// 3. Ransomware File Renames
+DeviceFileEvents
+| where ActionType == "FileRenamed"
+| where PreviousFileName endswith_cs ".docx" and FileName endswith_cs ".locked"
+| summarize Count=count() by DeviceName, PreviousFileName, FileName
+| where Count > 25
+// Detects mass file encryption patterns
+
+// 4. Unauthorized Service Creation
+DeviceProcessEvents
+| where ProcessCommandLine has "sc create" 
+| where InitiatingProcessParentFileName != "services.exe"
+| project Timestamp, DeviceName, ProcessCommandLine
+// Identifies persistence via service installation
+
+// 5. LSASS Memory Access
+DeviceProcessEvents
+| where FileName =~ "lsass.exe"
+| where InitiatingProcessFileName in~ ("procdump.exe", "sqldumper.exe", "rundll32.exe")
+| project Timestamp, DeviceName, InitiatingProcessFileName
+// Flags credential dumping tools
+
+// 6. Scheduled Task Creation
+DeviceProcessEvents
+| where ProcessCommandLine has "schtasks /create"
+| where InitiatingProcessFileName != "taskeng.exe"
+| project Timestamp, DeviceName, ProcessCommandLine
+// Detects persistence via scheduled tasks
+
+// 7. HTTP Beaconing Detection
+DeviceNetworkEvents
+| where RemoteIPType == "Public"
+| where Protocol == "Http"
+| summarize BeaconCount=count(), FirstCall=min(Timestamp), LastCall=max(Timestamp) by DeviceName, RemoteIP
+| where BeaconCount > 50 and (LastCall - FirstCall) > 1h
+// Finds repetitive C2 communications
+
+// 8. Run Key Persistence
+DeviceRegistryEvents
+| where RegistryKey contains "\\Run\\"
+| where ActionType == "RegistryValueSet"
+| project Timestamp, DeviceName, RegistryValueName, RegistryValueData
+// Monitors autorun registry changes
+
+// 9. Pass-the-Hash Activity
+DeviceLogonEvents
+| where LogonType == 3 // Network logon
+| where InitiatingProcessFileName in~ ("psexec.exe", "wmic.exe", "cscript.exe")
+| project Timestamp, DeviceName, AccountName, RemoteIP
+// Detects lateral movement techniques
+
+// 10. RDP to High-Risk Countries
+DeviceNetworkEvents
+| where RemotePort == 3389
+| where RemoteIPCountry !in ("US", "CA", "UK", "AU", "DE")
+| summarize Connections=count() by DeviceName, RemoteIP, RemoteIPCountry
+// Alerts on RDP to untrusted regions
+
+// 11. Cryptomining Pool Traffic
+let MiningPools = dynamic(["xmrpool", "nanopool", "ethermine", "f2pool"]);
+DeviceNetworkEvents
+| where RemoteUrl has_any (MiningPools)
+| project Timestamp, DeviceName, RemoteUrl, InitiatingProcessFileName
+// Detects coinminer connections
+
+// 12. Security Feature Tampering
+DeviceProcessEvents
+| where ProcessCommandLine has_any("DisableRealtimeMonitoring", "Set-MpPreference -Disable", "Add-Exclusion")
+| project Timestamp, DeviceName, ProcessCommandLine
+// Finds AV/EDR bypass attempts
+
+// 13. WMI Event Subscription
+DeviceEvents
+| where ActionType == "WmiEventSubscriptionCreated"
+| where InitiatingProcessFileName != "wmiprvse.exe"
+| project Timestamp, DeviceName, Payload
+// Identifies WMI-based persistence
+
+// 14. Large Cloud File Uploads
+CloudAppEvents
+| where ActionType == "FileUpload"
+| where FileSizeBytes > 500000000 // 500MB+
+| project Timestamp, AccountName, FileName, FileSizeBytes
+// Detects potential data exfiltration
+
+// 15. Suspicious DNS Requests
+DeviceNetworkEvents
+| where ActionType == "DnsRequest"
+| where DomainName matches regex @".*(dyn|ddns|no-ip).*"
+| summarize Count=count() by DeviceName, DomainName
+| where Count < 3 // Rare domains
+// Finds DGA/DNS tunneling
+
+// 16. Critical Unpatched Vulnerabilities
+DeviceTvmSoftwareVulnerabilities
+| where CveSeverity == "Critical"
+| where IsExploitAvailable == 1
+| summarize by DeviceName, CveId, SoftwareVendor
+// Shows exploitable vulnerabilities
+
+// 17. Internet-Exposed SMB
+DeviceNetworkEvents
+| where LocalPort == 445
+| where RemoteIPType == "Public"
+| summarize by DeviceName, RemoteIP
+// Finds systems with open SMB to internet
+
+// 18. Weak Authentication Protocols
+DeviceLogonEvents
+| where Protocol in ("NTLMv1", "LM")
+| project Timestamp, DeviceName, AccountName, Protocol
+// Detects outdated auth methods
+
+// 19. New Startup Items
+DeviceRegistryEvents
+| where Timestamp > ago(7d)
+| where RegistryKey contains "\\RunOnce\\" or RegistryKey contains "\\RunServices\\"
+| where ActionType == "RegistryValueSet"
+// Tracks new persistence locations
+
+// 20. Lateral Movement Tools
+DeviceProcessEvents
+| where InitiatingProcessFileName in~ ("psexec.exe", "wmic.exe", "powershell.exe")
+| where ProcessCommandLine has "\\\\" 
+| project Timestamp, DeviceName, ProcessCommandLine
+// Identifies network admin tool usage
+
+// 21. Phishing Document Macros
+DeviceFileEvents
+| where FileName endswith ".docm" or FileName endswith ".xlsm"
+| where InitiatingProcessParentFileName != "winword.exe"
+| project Timestamp, DeviceName, InitiatingProcessFileName, FileName
+// Detects macro-enabled docs from suspicious sources
+
+// 22. Kerberoasting Attempts
+DeviceEvents
+| where ActionType == "SecurityPrincipalOperation"
+| where AdditionalFields has "4769" // Kerberos TGS requests
+| where InitiatingProcessAccountName endswith "$" // Service account requests
+| summarize Count=count() by DeviceName, InitiatingProcessAccountName
+| where Count > 10
+// Identifies credential harvesting
+
+// 23. Uncommon Child Processes
+DeviceProcessEvents
+| where InitiatingProcessFileName =~ "svchost.exe"
+| where FileName !in ("conhost.exe", "taskhostw.exe", "dllhost.exe")
+| project Timestamp, DeviceName, FileName, ProcessCommandLine
+// Finds unusual processes from common parents
+
+// 24. DNS Tunneling Indicators
+DeviceNetworkEvents
+| where ActionType == "DnsRequest"
+| where DomainName matches regex @"[a-z0-9]{32}\."
+| summarize Count=count() by DeviceName, DomainName
+// Detects encoded/long DNS queries
+
+// 25. Clipboard Data Theft
+DeviceEvents
+| where ActionType == "ClipboardModified"
+| where InitiatingProcessFileName != "explorer.exe"
+| project Timestamp, DeviceName, InitiatingProcessFileName
+// Flags unauthorized clipboard access
+
+// 26. Office Spawns Shell
+DeviceProcessEvents
+| where InitiatingProcessFileName in ("winword.exe", "excel.exe", "powerpnt.exe")
+| where FileName in ("cmd.exe", "powershell.exe", "wscript.exe")
+| project Timestamp, DeviceName, InitiatingProcessFileName, FileName
+// Finds malicious document behaviors
+
+// 27. Windows Defender Exclusions
+DeviceRegistryEvents
+| where RegistryKey contains "\\Exclusions\\"
+| where ActionType == "RegistryValueSet"
+| project Timestamp, DeviceName, RegistryValueName, RegistryValueData
+// Tracks security bypasses
+
+// 28. Anonymous TOR Traffic
+DeviceNetworkEvents
+| where RemotePort == 9150 or RemotePort == 9050
+| summarize Connections=count() by DeviceName, RemoteIP
+// Detects TOR proxy usage
+
+// 29. Process Hollowing
+DeviceImageLoadEvents
+| where FileName =~ "explorer.exe"
+| where InitiatingProcessFileName =~ "svchost.exe"
+| project Timestamp, DeviceName, InitiatingProcessFileName
+// Identifies common injection technique
+
+// 30. GPO Modification Events
+DeviceRegistryEvents
+| where RegistryKey contains "GroupPolicy\\"
+| where ActionType == "RegistryKeySetValue"
+| project Timestamp, DeviceName, RegistryValueName
+// Alerts on Group Policy tampering
+
+// 31. Hidden File Extensions
+DeviceFileEvents
+| where FileName matches regex @"\.(exe|dll|scr)\.(txt|jpg|pdf)$"
+| project Timestamp, DeviceName, FolderPath, FileName
+// Finds disguised executables
+
+// 32. Service Binary Modifications
+DeviceRegistryEvents
+| where RegistryKey contains "\\Services\\"
+| where RegistryValueName == "ImagePath"
+| where ActionType == "RegistryValueSet"
+| project Timestamp, DeviceName, RegistryValueData
+// Detects service hijacking
+
+// 33. Windows Event Log Clearing
+DeviceEvents
+| where ActionType == "WindowsEventLogCleared"
+| project Timestamp, DeviceName, InitiatingProcessFileName
+// Flags evidence tampering
+
+// 34. Unusual Outbound FTP
+DeviceNetworkEvents
+| where Protocol == "Ftp"
+| where RemoteIPType == "Public"
+| summarize DataSentMB=sum(TotalBytesSent)/1000000 by DeviceName, RemoteIP
+| where DataSentMB > 100
+// Detects large FTP data exfiltration
+
+// 35. COM Hijacking
+DeviceRegistryEvents
+| where RegistryKey contains "\\InprocServer32\\"
+| where ActionType == "RegistryValueSet"
+| where RegistryValueData !contains "C:\\Windows"
+| project Timestamp, DeviceName, RegistryValueData
+// Identifies component object model abuse
+
+// 36. DNS Cache Poisoning
+DeviceEvents
+| where ActionType == "DnsRecordInsertion"
+| where InitiatingProcessFileName != "dns.exe"
+| project Timestamp, DeviceName, DomainName
+// Detects malicious DNS modifications
+
+// 37. Remote WMI Process Creation
+DeviceProcessEvents
+| where ProcessCommandLine has "win32_process" and ProcessCommandLine has "call create"
+| project Timestamp, DeviceName, ProcessCommandLine
+// Finds WMI remote execution
+
+// 38. Suspicious VBS Execution
+DeviceProcessEvents
+| where FileName =~ "wscript.exe" or FileName =~ "cscript.exe"
+| where ProcessCommandLine has ".vbs" and ProcessCommandLine has_any("http", "\\")
+| project Timestamp, DeviceName, ProcessCommandLine
+// Detects malicious scripts
+
+// 39. RDP Session Hijacking
+DeviceLogonEvents
+| where LogonType == 10 // RemoteInteractive
+| where SessionIdType == "Remote"
+| summarize Sessions=count() by DeviceName, AccountName
+| where Sessions > 3
+// Identifies multiple RDP sessions
+
+// 40. Certificate Theft
+DeviceRegistryEvents
+| where RegistryKey contains "\\Crypto\\"
+| where ActionType == "RegistryValueSet"
+| where InitiatingProcessFileName != "lsass.exe"
+| project Timestamp, DeviceName, RegistryValueName
+// Flags certificate store access
