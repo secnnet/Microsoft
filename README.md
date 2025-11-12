@@ -1,7 +1,5 @@
 # Microsoft Security Search Queries
 
-Hello,
-
 This document contains a collection of search queries specifically designed for Microsoft security products, including Microsoft Defender, Sentinel, and more. These queries are aimed at enhancing threat detection, incident investigation, and overall security posture.
 
 ## What's Included:
